@@ -1,0 +1,238 @@
+---
+title: "Prediction of 2020 USA ELECTION"
+author: "Yehao Zheng, Kaicheng Huang, Yujing Hua, Tingyi Li"
+date: "Nov 2rd"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+# Loading in the cleaned survey Data
+filter_survey <- read_csv("/Users/yehao/Desktop/STA304 PS3/outputs/survey_data.csv")
+
+# Loading in the cleaned census Data
+filter_census <- read_csv("/Users/yehao/Desktop/STA304 PS3/outputs/census_data.csv")
+
+```
+
+
+### Model
+
+# Prepration to create model
+```{r, include=FALSE}
+#Get the dataset for modelling
+filter_survey%>% 
+  select(vote_2020,age,agegroup,sex,state,household_income,race)->survey_data
+filter_census%>% 
+  select(perwt,age,agegroup,sex,state,household_income,race)->census_data
+
+#create cells for both datasets
+survey_data$cell<-paste(survey_data$sex,survey_data$race)
+census_data$cell<-paste(census_data$sex,census_data$race)
+
+fac_survey<-c("agegroup","sex","state","household_income" ,"race", "cell","vote_2020")
+survey_data[fac_survey] <- lapply(survey_data[fac_survey], factor) 
+fac_census<-c("agegroup","sex","state","household_income" ,"race", "cell")
+census_data[fac_census] <- lapply(census_data[fac_census], factor) 
+survey_data$vote_2020 <- relevel(survey_data$vote_2020, ref = "Donald Trump")    
+
+#To predict probability of voting for Biden (Trump as ref)
+
+length(unique(survey_data$cell))  
+length(unique(census_data$cell))
+```
+
+# Create the model
+```{r, echo=FALSE}
+library(lme4)
+library(tidybayes)
+library(caret)
+library(pROC)
+
+#get the glmer model
+log_model <- glmer(vote_2020~(1+race|cell)+agegroup+sex+state+household_income,
+                      data = survey_data, 
+                      family=binomial)
+
+summary(log_model)
+
+#Model on survey data
+surv_prob<-predict(log_model,type=c('response'))
+result_1<-ifelse(surv_prob>=0.5,"Joe Biden","Donald Trump")
+survey_result<-cbind(survey_data,result_1)
+
+cm_num<-confusionMatrix(survey_result$result_1,survey_result$vote_2020)[2]
+accu_num<-confusionMatrix(survey_result$result_1,survey_result$vote_2020)[3]$overall['Accuracy']
+cm_num
+accu_num
+
+roc_num <- roc(survey_result$vote_2020, surv_prob)
+auc(roc_num)
+plot(roc_num, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+```
+
+  In this project, we choose to build a generalized linear Mixed-Effects Models with one random effect factor ‘Vote_2020’ indicating who will get more vote in the election by our prediction and four fixed effect factors ‘agegroup’,’sex’,’state’,’household_income’, which we will consider and use in our model to predict who will win. Our mathematical formula is vote_2020~ agegroup+sex+state+household_income+(1+race|cell) . From the output above, we see the coefficient of intercept beta_0 is -0.82573 which is the log odd of vote_2020 when we set agegroup, sex, state,household_income to be their reference value.
+
+  We choose dunction glmer() based on several reasons. Firstly, as mentioned before we have both random and fixed effect factors in the model and the data we choose is clustered by support Trump or Biden. Second, we do not expect a linear relationship between response and explanatory variables since we want to have a binomial outcome. Also, from the output we got a value of auc=0.7063 which means our model has a good performance since auc is larger than 0.5, this is also showed by the figure of AUC (figure 1) such that our predict model is close to true model with more than 50% of accuracy
+
+
+# Model Selection
+```{r, echo=FALSE}
+log_model_1 <- glmer(vote_2020~(1+agegroup|cell)+race+sex+state+household_income,
+                      data = survey_data, 
+                      family=binomial)
+summary(log_model_1)
+```
+
+# Model Checking
+```{r, echo=FALSE}
+# Check AIC
+AIC(log_model)
+AIC(log_model_1)
+# Check BIC
+BIC(log_model)
+BIC(log_model_1)
+# Diagnostic plot
+par(mfrow = c(2, 2))
+plot(log_model)
+plot(log_model_1)
+```
+
+### Post-Stratification 
+```{r, echo=FALSE}
+#Model on census data
+cens_prob<-predict(log_model,census_data[,c("agegroup","sex","state",
+                                                    "household_income","race","cell")],type="response")
+result_2<-ifelse(cens_prob>0.5,"Joe Biden","Donald Trump")
+census_result<-cbind(census_data,result_2)
+
+#get the acutal votes based on person weight
+census_result$trump_votes<-ifelse(census_result$result_2=="Donald Trump",census_result$perwt,0)
+census_result$biden_votes<-ifelse(census_result$result_2=="Joe Biden",census_result$perwt,0)
+
+#calculate the votes in each state
+census_result %>% group_by(state) %>% summarise(Trump=sum(trump_votes),Biden=sum(biden_votes))->vote_state
+vote_state$winner<-ifelse(vote_state$Trump>vote_state$Biden,
+                                "Donald Trump","Joe Biden")
+
+#get the electroal votes for each state
+vote_state<-vote_state %>% 
+  mutate(electoral_votes = case_when(state=="CA"~55,state=="TX"~38,state=="FL"~29,state=="NY"~29,state=="IL"~20,state=="PA"~20,state=="OH"~18,
+                                     state=="GA"~16,state=="MI"~16,state=="NC"~15,state=="NJ"~14,state=="VA"~13,state=="WA"~12,state=="AZ"~11,
+                                     state=="IN"~11,state=="MA"~11,state=="TN"~11,state=="MD"~10,state=="MN"~10,state=="MO"~10,state=="WI"~10,
+                                     state=="AL"~9,state=="CO"~9,state=="SC"~9,state=="KY"~8,state=="LA"~8,state=="CT"~7,state=="OK"~7,
+                                     state=="OR"~7,state=="AR"~6,state=="IA"~6,state=="KS"~6,state=="MS"~6,state=="NV"~6,state=="UT"~6,
+                                     state=="NE"~5,state=="NM"~5,state=="WV"~5,state=="HI"~4,state=="ID"~4,state=="ME"~4,state=="NH"~4,
+                                     state=="RI"~4,state=="AK"~3,state=="DE"~3,state=="MT"~3,state=="ND"~3,state=="SD"~3,state=="VT"~3,
+                                     state=="WY"~3,state=="DC"~3
+  )) 
+
+
+vote_state %>% group_by(winner) %>% summarise(total_votes=sum(electoral_votes))->election_result
+election_result
+
+```
+
+  Post-stratification is a sampling tool based on that similar units in a population should be treated equally. It is a statistical fact that grouping similar units in sampling usually reduces the variance of the resulting survey estimate. Stratification can be done during or after the study. The latter application often termed as post-stratification. We use glmer to estimate y for each cell. Then we can use demographics to “extrapolate” how the entire population will vote. It is useful because when the sample has been selected by the simple random sampling, post-stratification is often appropriate when a simple random is not represented by a balance. It can be performed with any useful model. In this case, we can use it to predict how people will vote. We create a cell in the survey data. The variable we used to create the cell is race. In addition, we use constant 1 as  an interpreted variable combined with variable race to create this cell. The reason why we choose this variable is we think this variable is the most important effect related to the result of the vote. We didn’t choose other variables because they have less influences related to the result of the vote. 
+  
+  For the addition analysis of Psot-Stratification, firstly, we use the predict function to calculate the probability of voting in census data and denote as result_2. Then we combine result_2 and census data denote and result of census. In the second step, we get the actual votes based on person weight and calculate the votes in each state by ifelse and summarise functions. At the end, we use mutate function to get the electoral votes in each state.
+
+
+### Results
+```{r, echo=FALSE}
+new1_data <-
+  filter_survey %>%
+  mutate(vote_Trump = 
+           ifelse(vote_2020=="Donald Trump", 1, 0)) %>%
+  mutate(vote_Biden = 
+           ifelse(vote_2020=="Joe Biden", 1, 0)) %>%
+  group_by(state) %>%
+  mutate(total_vote_Trump = sum(vote_Trump))%>%
+  mutate(total_vote_Biden = sum(vote_Biden))%>%
+  select(state,total_vote_Trump, total_vote_Biden)
+rem_dup_1 <- new1_data[!duplicated(new1_data),]
+rem_dup_1
+
+new2_data <-
+  filter_survey %>%
+  mutate(vote_Trump = 
+           ifelse(vote_2020=="Donald Trump", 1, 0)) %>%
+  mutate(vote_Biden = 
+           ifelse(vote_2020=="Joe Biden", 1, 0)) %>%
+  group_by(sex) %>%
+  mutate(total_vote_Trump = sum(vote_Trump))%>%
+  mutate(total_vote_Biden = sum(vote_Biden))%>%
+  select(sex,total_vote_Trump, total_vote_Biden)
+rem_dup_2 <- new2_data[!duplicated(new2_data),]
+rem_dup_2
+
+new3_data <-
+  filter_survey %>%
+  mutate(vote_Trump = 
+           ifelse(vote_2020=="Donald Trump", 1, 0)) %>%
+  mutate(vote_Biden = 
+           ifelse(vote_2020=="Joe Biden", 1, 0)) %>%
+  group_by(agegroup) %>%
+  mutate(total_vote_Trump = sum(vote_Trump))%>%
+  mutate(total_vote_Biden = sum(vote_Biden))%>%
+  select(agegroup,total_vote_Trump, total_vote_Biden)
+rem_dup_3 <- new3_data[!duplicated(new3_data),]
+rem_dup_3
+
+new4_data <-
+  filter_survey %>%
+  mutate(vote_Trump = 
+           ifelse(vote_2020=="Donald Trump", 1, 0)) %>%
+  mutate(vote_Biden = 
+           ifelse(vote_2020=="Joe Biden", 1, 0)) %>%
+  group_by(race) %>%
+  mutate(total_vote_Trump = sum(vote_Trump))%>%
+  mutate(total_vote_Biden = sum(vote_Biden))%>%
+  select(race,total_vote_Trump, total_vote_Biden)
+rem_dup_4 <- new4_data[!duplicated(new4_data),]
+rem_dup_4
+```
+  
+  We estimate that the proportion of voters in favour of voting for ‘Joe Biden’ to be 0.599. This is based on our post-stratification analysis of the proportion of voters in favour of  ‘Joe Biden’  modelled by a glmer model, which accounted for ‘agegroup’,’sex’,’state’,’household_income’ and ‘race’. Base on our further analysis above, in terms of sex, we can see male are more inventive to vote for Trump and Biden, and differences between male and female are not huge in both cases. Also form next calculation, we have almost same number people aged from 18-80 vote for Trump while Biden gains more vote from age group of 40 or less. Another result we have is that there are three states CA, TX, and FL,which both of Trump and Biden get most of their votes from. Based on races, we noticed that most of people who vote are white apparently, and people from other races are not prefer to vote for Trump but Biden, since Biden wins more vote from Black and other races.  
+
+
+### Discussion
+
+  Firstly, we cleaned raw data with five variables we used and made some assumptions to the final data. We assumed people who intended to vote in the election must be older than 18 years old and we ignored observations with NA value. Also we tried to match each variable in survey data and census data have the same contents such that for the ‘state’ variable they have the same names of states. Secondly, we build a glmer model to predict the result of votes by  using selected variables. For our model, we summarize it and display the model on survey data. Then we use model selection to create a new logit model with different cells and compare its AIC, BIC and diagnostic plot with our original model.  Also, we found that some of our calculations contradict our knowledge in the real life. For example, we think Trump are more popular in the group of females rather than male but out statistics shows female vote more for Biden. However, there still are some data that follow what we heard and read from public medias. Our result shows Trump gains more vote from elder people while Biden is more popular in young ages and people who support both of them are white. Therefore, we think our model is quite close to the real life situation because most our results match the facts that are happening. Lastly, we use post-stratification on each state to make further analysis.
+
+  In conclusion, we tried predict who will win the election 2020 by looking at the age, income, state and sex of these who have invention to vote. Even our model stated the winner will be Biden but this is not what we thought before and what will happen in the future since the result of the election is based on the electoral college not the actual vote.  We do not know who will attend the electoral college from each state and what their political preference is, so it is hard to say who will win. However, we believe Trump has a higher probability to gain more votes since we read some articles which showed a higher degree of popularity in U.S.
+
+
+### Weaknesses
+
+  Firstly, according to our model selection, the logit model with cell agegroup has lower AIC than our original model with cell race. Although the difference of AIC for these two model is relative small (52.101), this may be a drawback since the model with cell agegroup has more accuracy,
+The second point is our sample size is not large enough. Furthermore, the limitation of computing power causes that we cannot add more variables in our cell to predict the vote result. Therefore, it may cause our model less accuracy. Lastly, our assumption is too idealized and simplified and the survey data was selected a few months ago, thus the data does not have time sensitivity. 
+
+## Next Steps
+
+  A lot of tuning needs to be done to improve it. Firstly, we can improve the data set, enlarge our sample size for the model. Secondly, better equipment also can improve computing power which could add more variables in the cell in order to get more accurate predictions. This includes improved feature selection and perhaps principal component analysis for numerical variables.
+
+
+
+### References
+
+1. Census dara
+Team, MPC UX/UI. “U.S. CENSUS DATA FOR SOCIAL, ECONOMIC, AND HEALTH RESEARCH.” IPUMS USA, 2020, usa.ipums.org/usa/index.shtml. 
+
+2. Survey data
+Press, Courier &amp;, et al. “New: Second Nationscape Data Set Release.” Democracy Fund Voter Study Group, 30 Oct. 2020, www.voterstudygroup.org/publication/nationscape-data-set. 
+
+3. Post-stratification and further topic on stratification. 
+“6.3 - Poststratification and Further Topics on Stratification: STAT 506.” PennState: Statistics Online Courses, online.stat.psu.edu/stat506/lesson/6/6.3. 
+
+4. Purpose of glmer model
+Love, Kim, and Eliza. “What Is the Purpose of a Generalized Linear Mixed Model?” The Analysis Factor, 30 Oct. 2020, www.theanalysisfactor.com/what-is-the-purpose-of-a-generalized-linear-mixed-model/. 
+
+5. Template code from Prof Rohan Alexander and Sam Caetano, rohan.alexander@utoronto.ca
+
+
